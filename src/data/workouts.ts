@@ -1,0 +1,295 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type {
+  Exercise, SetValues, WorkoutExercise, WorkoutSession, WorkoutSet, WorkoutStatus, WorkoutSummary,
+} from "@/domain/workout";
+
+type SessionRow = {
+  id: string;
+  status: WorkoutStatus;
+  started_at: string;
+  finished_at: string | null;
+};
+
+type ExerciseRow = { id: string; name: string; muscle_group: string };
+
+type WorkoutExerciseRow = {
+  id: string;
+  workout_session_id: string;
+  exercise_id: string;
+  position: number;
+  created_at?: string;
+  exercises?: { name: string; muscle_group: string } | null;
+};
+
+type SetRow = {
+  id: string;
+  workout_exercise_id: string;
+  position: number;
+  weight_kg: number | string;
+  reps: number;
+  recorded_at: string;
+};
+
+function mapSet(row: SetRow): WorkoutSet {
+  return {
+    id: row.id,
+    workoutExerciseId: row.workout_exercise_id,
+    position: row.position,
+    weightKg: Number(row.weight_kg),
+    reps: row.reps,
+    recordedAt: row.recorded_at,
+  };
+}
+
+export async function getExercises(client: SupabaseClient): Promise<Exercise[]> {
+  const { data, error } = await client.from("exercises")
+    .select("id, name, muscle_group").order("name");
+  if (error) throw error;
+  return ((data ?? []) as ExerciseRow[]).map((row) => ({
+    id: row.id,
+    name: row.name,
+    muscleGroup: row.muscle_group,
+  }));
+}
+
+export async function getWorkoutById(
+  client: SupabaseClient,
+  userId: string,
+  workoutId: string,
+): Promise<WorkoutSession | null> {
+  const { data: sessionData, error: sessionError } = await client.from("workout_sessions")
+    .select("id, status, started_at, finished_at")
+    .eq("id", workoutId).eq("user_id", userId).maybeSingle();
+  if (sessionError) throw sessionError;
+  if (!sessionData) return null;
+  const session = sessionData as SessionRow;
+
+  const { data: exerciseData, error: exerciseError } = await client.from("workout_exercises")
+    .select("id, workout_session_id, exercise_id, position, exercises(name, muscle_group)")
+    .eq("workout_session_id", workoutId).order("position");
+  if (exerciseError) throw exerciseError;
+  const exerciseRows = (exerciseData ?? []) as unknown as WorkoutExerciseRow[];
+
+  let setRows: SetRow[] = [];
+  if (exerciseRows.length > 0) {
+    const { data: setData, error: setError } = await client.from("workout_sets")
+      .select("id, workout_exercise_id, position, weight_kg, reps, recorded_at")
+      .in("workout_exercise_id", exerciseRows.map((row) => row.id)).order("position");
+    if (setError) throw setError;
+    setRows = (setData ?? []) as SetRow[];
+  }
+
+  const setsByExercise = new Map<string, WorkoutSet[]>();
+  for (const row of setRows) {
+    const sets = setsByExercise.get(row.workout_exercise_id) ?? [];
+    sets.push(mapSet(row));
+    setsByExercise.set(row.workout_exercise_id, sets);
+  }
+
+  const exercises: WorkoutExercise[] = exerciseRows.map((row) => ({
+    id: row.id,
+    exerciseId: row.exercise_id,
+    exerciseName: row.exercises?.name ?? "種目",
+    muscleGroup: row.exercises?.muscle_group ?? "",
+    position: row.position,
+    sets: setsByExercise.get(row.id) ?? [],
+  }));
+
+  return {
+    id: session.id,
+    status: session.status,
+    startedAt: session.started_at,
+    finishedAt: session.finished_at,
+    exercises,
+  };
+}
+
+export async function getActiveWorkout(
+  client: SupabaseClient,
+  userId: string,
+): Promise<WorkoutSession | null> {
+  const { data, error } = await client.from("workout_sessions")
+    .select("id").eq("user_id", userId).eq("status", "active").maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return getWorkoutById(client, userId, data.id);
+}
+
+export async function startOrResumeWorkout(
+  client: SupabaseClient,
+  userId: string,
+): Promise<WorkoutSession> {
+  const active = await getActiveWorkout(client, userId);
+  if (active) return active;
+
+  const { data, error } = await client.from("workout_sessions")
+    .insert({ user_id: userId }).select("id").single();
+  if (error) {
+    // The partial unique index makes two simultaneous start requests converge.
+    if (error.code === "23505") {
+      const resumed = await getActiveWorkout(client, userId);
+      if (resumed) return resumed;
+    }
+    throw error;
+  }
+
+  const workout = await getWorkoutById(client, userId, data.id);
+  if (!workout) throw new Error("作成したトレーニングを読み込めませんでした。");
+  return workout;
+}
+
+export async function addExercise(
+  client: SupabaseClient,
+  workoutId: string,
+  exerciseId: string,
+): Promise<void> {
+  const { data: last, error: positionError } = await client.from("workout_exercises")
+    .select("position").eq("workout_session_id", workoutId)
+    .order("position", { ascending: false }).limit(1);
+  if (positionError) throw positionError;
+
+  const { error } = await client.from("workout_exercises").insert({
+    workout_session_id: workoutId,
+    exercise_id: exerciseId,
+    position: ((last ?? [])[0]?.position ?? 0) + 1,
+  });
+  if (error?.code === "23505") throw new Error("この種目は追加済みです。画面を更新して確認してください。");
+  if (error) throw error;
+}
+
+export async function saveSet(
+  client: SupabaseClient,
+  params: { id: string; workoutExerciseId: string; position: number } & SetValues,
+): Promise<WorkoutSet> {
+  const { data, error } = await client.from("workout_sets").insert({
+    id: params.id,
+    workout_exercise_id: params.workoutExerciseId,
+    position: params.position,
+    weight_kg: params.weightKg,
+    reps: params.reps,
+  }).select("id, workout_exercise_id, position, weight_kg, reps, recorded_at").single();
+
+  if (error?.code === "23505") {
+    // A response can be lost after the insert succeeded. Retry with the same UUID.
+    const { data: existing, error: lookupError } = await client.from("workout_sets")
+      .select("id, workout_exercise_id, position, weight_kg, reps, recorded_at")
+      .eq("id", params.id).maybeSingle();
+    if (lookupError) throw lookupError;
+    if (existing && existing.workout_exercise_id === params.workoutExerciseId &&
+      Number(existing.weight_kg) === params.weightKg && existing.reps === params.reps) {
+      return mapSet(existing as SetRow);
+    }
+    throw new Error("セットの保存が重複しました。画面を更新して確認してください。");
+  }
+
+  if (error) throw error;
+  return mapSet(data as SetRow);
+}
+
+export async function updateSet(
+  client: SupabaseClient,
+  setId: string,
+  values: SetValues,
+): Promise<void> {
+  const { error } = await client.from("workout_sets")
+    .update({ weight_kg: values.weightKg, reps: values.reps })
+    .eq("id", setId).select("id").single();
+  if (error) throw error;
+}
+
+export async function deleteSet(client: SupabaseClient, setId: string): Promise<void> {
+  const { error } = await client.from("workout_sets")
+    .delete().eq("id", setId).select("id").single();
+  if (error) throw error;
+}
+
+export async function finishWorkout(
+  client: SupabaseClient,
+  userId: string,
+  workoutId: string,
+): Promise<void> {
+  const workout = await getWorkoutById(client, userId, workoutId);
+  if (!workout || workout.status !== "active") throw new Error("進行中のトレーニングが見つかりません。");
+  if (!workout.exercises.some((exercise) => exercise.sets.length > 0)) {
+    throw new Error("1セット以上記録してから終了してください。");
+  }
+
+  const { error } = await client.from("workout_sessions")
+    .update({ status: "completed" }).eq("id", workoutId).eq("status", "active")
+    .select("id").single();
+  if (error) throw error;
+}
+
+export async function cancelWorkout(
+  client: SupabaseClient,
+  workoutId: string,
+): Promise<void> {
+  const { error } = await client.from("workout_sessions")
+    .update({ status: "cancelled" }).eq("id", workoutId).eq("status", "active")
+    .select("id").single();
+  if (error) throw error;
+}
+
+export async function getHistory(
+  client: SupabaseClient,
+  userId: string,
+  limit = 30,
+): Promise<WorkoutSummary[]> {
+  const { data: sessionData, error: sessionError } = await client.from("workout_sessions")
+    .select("id, status, started_at, finished_at")
+    .eq("user_id", userId).eq("status", "completed")
+    .order("started_at", { ascending: false }).limit(limit);
+  if (sessionError) throw sessionError;
+  const sessions = (sessionData ?? []) as SessionRow[];
+  if (sessions.length === 0) return [];
+
+  const { data: exerciseData, error: exerciseError } = await client.from("workout_exercises")
+    .select("id, workout_session_id").in("workout_session_id", sessions.map((session) => session.id));
+  if (exerciseError) throw exerciseError;
+  const exerciseRows = (exerciseData ?? []) as Pick<WorkoutExerciseRow, "id" | "workout_session_id">[];
+
+  let setRows: Pick<SetRow, "workout_exercise_id">[] = [];
+  if (exerciseRows.length > 0) {
+    const { data: setData, error: setError } = await client.from("workout_sets")
+      .select("workout_exercise_id").in("workout_exercise_id", exerciseRows.map((row) => row.id));
+    if (setError) throw setError;
+    setRows = (setData ?? []) as Pick<SetRow, "workout_exercise_id">[];
+  }
+
+  const sessionIdByExerciseId = new Map(exerciseRows.map((row) => [row.id, row.workout_session_id]));
+  const counts = new Map(sessions.map((session) => [session.id, { exercises: 0, sets: 0 }]));
+  for (const row of exerciseRows) counts.get(row.workout_session_id)!.exercises += 1;
+  for (const row of setRows) {
+    const sessionId = sessionIdByExerciseId.get(row.workout_exercise_id);
+    if (sessionId) counts.get(sessionId)!.sets += 1;
+  }
+
+  return sessions.map((session) => ({
+    id: session.id,
+    startedAt: session.started_at,
+    finishedAt: session.finished_at!,
+    exerciseCount: counts.get(session.id)!.exercises,
+    setCount: counts.get(session.id)!.sets,
+  }));
+}
+
+export async function getLastExerciseSets(
+  client: SupabaseClient,
+  userId: string,
+  exerciseId: string,
+): Promise<WorkoutSet[]> {
+  const { data, error } = await client.from("workout_exercises")
+    .select("id, workout_sessions!inner(user_id, status)")
+    .eq("exercise_id", exerciseId)
+    .eq("workout_sessions.user_id", userId)
+    .eq("workout_sessions.status", "completed")
+    .order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw error;
+  if (!data) return [];
+
+  const { data: setData, error: setError } = await client.from("workout_sets")
+    .select("id, workout_exercise_id, position, weight_kg, reps, recorded_at")
+    .eq("workout_exercise_id", data.id).order("position");
+  if (setError) throw setError;
+  return ((setData ?? []) as SetRow[]).map(mapSet);
+}
