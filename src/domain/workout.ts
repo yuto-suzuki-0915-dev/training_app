@@ -38,6 +38,7 @@ export type WorkoutSummary = {
   finishedAt: string;
   exerciseCount: number;
   setCount: number;
+  volumeKg: number;
 };
 
 export type SetValues = { weightKg: number; reps: number };
