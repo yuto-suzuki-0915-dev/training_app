@@ -1,7 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
-  Exercise, SetValues, WorkoutExercise, WorkoutSession, WorkoutSet, WorkoutStatus, WorkoutSummary,
+  Exercise, ExerciseRecord, SetValues, WorkoutExercise, WorkoutSession, WorkoutSet, WorkoutStatus, WorkoutSummary,
 } from "@/domain/workout";
+import { estimateOneRm } from "@/domain/progress";
 
 type SessionRow = {
   id: string;
@@ -240,7 +241,25 @@ export async function getHistory(
     .eq("user_id", userId).eq("status", "completed")
     .order("started_at", { ascending: false }).limit(limit);
   if (sessionError) throw sessionError;
-  const sessions = (sessionData ?? []) as SessionRow[];
+  return summarizeSessions(client, (sessionData ?? []) as SessionRow[]);
+}
+
+export async function getCompletedWorkoutsInRange(
+  client: SupabaseClient,
+  userId: string,
+  start: string,
+  end: string,
+): Promise<WorkoutSummary[]> {
+  const { data, error } = await client.from("workout_sessions")
+    .select("id, status, started_at, finished_at")
+    .eq("user_id", userId).eq("status", "completed")
+    .gte("started_at", start).lt("started_at", end)
+    .order("started_at", { ascending: false });
+  if (error) throw error;
+  return summarizeSessions(client, (data ?? []) as SessionRow[]);
+}
+
+async function summarizeSessions(client: SupabaseClient, sessions: SessionRow[]): Promise<WorkoutSummary[]> {
   if (sessions.length === 0) return [];
 
   const { data: exerciseData, error: exerciseError } = await client.from("workout_exercises")
@@ -271,6 +290,49 @@ export async function getHistory(
     exerciseCount: counts.get(session.id)!.exercises,
     setCount: counts.get(session.id)!.sets,
   }));
+}
+
+export async function getExerciseRecord(
+  client: SupabaseClient,
+  userId: string,
+  exerciseId: string,
+): Promise<ExerciseRecord> {
+  const workoutExerciseIds: string[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await client.from("workout_exercises")
+      .select("id, workout_sessions!inner(user_id, status)")
+      .eq("exercise_id", exerciseId)
+      .eq("workout_sessions.user_id", userId)
+      .in("workout_sessions.status", ["active", "completed"])
+      .order("id")
+      .range(offset, offset + 499);
+    if (error) throw error;
+    const rows = data ?? [];
+    workoutExerciseIds.push(...rows.map((row) => row.id));
+    if (rows.length < 500) break;
+  }
+
+  let maxWeight: WorkoutSet | null = null;
+  let estimatedOneRm: number | null = null;
+  for (let index = 0; index < workoutExerciseIds.length; index += 100) {
+    const ids = workoutExerciseIds.slice(index, index + 100);
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await client.from("workout_sets")
+        .select("id, workout_exercise_id, position, weight_kg, reps, recorded_at")
+        .in("workout_exercise_id", ids).order("id").range(offset, offset + 499);
+      if (error) throw error;
+      const rows = (data ?? []) as SetRow[];
+      for (const row of rows) {
+        const set = mapSet(row);
+        if (!maxWeight || set.weightKg > maxWeight.weightKg ||
+          (set.weightKg === maxWeight.weightKg && set.recordedAt > maxWeight.recordedAt)) maxWeight = set;
+        const estimate = estimateOneRm(set.weightKg, set.reps);
+        if (estimate !== null && (estimatedOneRm === null || estimate > estimatedOneRm)) estimatedOneRm = estimate;
+      }
+      if (rows.length < 500) break;
+    }
+  }
+  return { maxWeight, estimatedOneRm };
 }
 
 export async function getLastExerciseSets(
