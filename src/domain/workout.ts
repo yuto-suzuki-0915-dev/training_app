@@ -42,6 +42,11 @@ export type WorkoutSummary = {
 
 export type SetValues = { weightKg: number; reps: number };
 
+export type ExerciseRecord = {
+  maxWeight: WorkoutSet | null;
+  estimatedOneRm: number | null;
+};
+
 export function parseSetInput(weight: string, reps: string): SetValues {
   const trimmedWeight = weight.trim();
   const trimmedReps = reps.trim();

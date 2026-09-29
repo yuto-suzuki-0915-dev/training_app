@@ -39,9 +39,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {error && <div className="global-error" role="alert">{error}</div>}
       <div className="page-wrap">{children}</div>
       <nav className="bottom-nav" aria-label="メインナビゲーション">
-        <Link href="/" className={pathname === "/" ? "active" : ""}><span className="nav-icon">⌂</span>ホーム</Link>
-        <Link href="/workout" className={pathname === "/workout" ? "active" : ""}><span className="nav-icon">＋</span>記録</Link>
         <Link href="/history" className={pathname.startsWith("/history") ? "active" : ""}><span className="nav-icon">▤</span>履歴</Link>
+        <Link href="/" className={`home-tab${pathname === "/" ? " active" : ""}`} aria-current={pathname === "/" ? "page" : undefined}><span className="nav-icon">⌂</span>ホーム</Link>
+        <Link href="/workout" className={pathname === "/workout" ? "active" : ""}><span className="nav-icon">＋</span>記録</Link>
       </nav>
     </div>
   );
