@@ -9,6 +9,7 @@ import { localDayKey, localMonthRange } from "@/domain/progress";
 import { formatWorkoutDate, formatWorkoutTime, getErrorMessage, type WorkoutSession, type WorkoutSummary } from "@/domain/workout";
 
 const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
+const volumeFormatter = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 2 });
 
 export default function HomePage() {
   const { client, user } = useAuth();
@@ -18,6 +19,7 @@ export default function HomePage() {
   const [monthSessions, setMonthSessions] = useState<WorkoutSummary[]>([]);
   const [recent, setRecent] = useState<WorkoutSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const startInFlight = useRef(false);
@@ -36,6 +38,7 @@ export default function HomePage() {
 
   const load = useCallback(async () => {
     if (!client || !user || !today) return;
+    setLoading(true);
     try {
       const { start, end } = localMonthRange(today);
       const [current, monthly, history] = await Promise.all([
@@ -46,8 +49,13 @@ export default function HomePage() {
       setActive(current);
       setMonthSessions(monthly);
       setRecent(history);
+      setDataError(false);
       setError("");
     } catch (caught) {
+      setActive(null);
+      setMonthSessions([]);
+      setRecent([]);
+      setDataError(true);
       setError(getErrorMessage(caught, "ホームを読み込めませんでした。"));
     } finally {
       setLoading(false);
@@ -78,8 +86,11 @@ export default function HomePage() {
 
   const todayKey = localDayKey(today);
   const completedDays = new Set(monthSessions.map((session) => localDayKey(session.startedAt)));
+  const activeDayKey = active ? localDayKey(active.startedAt) : null;
   const todaySessions = monthSessions.filter((session) => localDayKey(session.startedAt) === todayKey);
   const activeToday = active && localDayKey(active.startedAt) === todayKey ? active : null;
+  const monthSetCount = monthSessions.reduce((sum, session) => sum + session.setCount, 0);
+  const monthVolumeKg = monthSessions.reduce((sum, session) => sum + session.volumeKg, 0);
   const todayExerciseCount = todaySessions.reduce((sum, session) => sum + session.exerciseCount, 0) + (activeToday?.exercises.length ?? 0);
   const todaySetCount = todaySessions.reduce((sum, session) => sum + session.setCount, 0) +
     (activeToday?.exercises.reduce((sum, exercise) => sum + exercise.sets.length, 0) ?? 0);
@@ -95,8 +106,8 @@ export default function HomePage() {
 
       {error && <div className="alert error-alert" role="alert">{error}<button type="button" onClick={() => { setLoading(true); setError(""); void load(); }}>再読み込み</button></div>}
 
-      <section className="calendar-card" aria-label={`${today.getFullYear()}年${today.getMonth() + 1}月のトレーニングカレンダー`}>
-        <div className="dashboard-section-heading"><div><span className="eyebrow">THIS MONTH</span><h2>{today.getFullYear()}年 {today.getMonth() + 1}月</h2></div><span className="calendar-count">{completedDays.size} 日</span></div>
+      <section className="calendar-card home-calendar" aria-label={`${today.getFullYear()}年${today.getMonth() + 1}月のトレーニングカレンダー`}>
+        <div className="dashboard-section-heading"><div><span className="eyebrow">THIS MONTH</span><h2>{today.getFullYear()}年 {today.getMonth() + 1}月</h2></div><span className="calendar-count">{loading || dataError ? "—" : completedDays.size} 日</span></div>
         <div className="calendar-grid">
           {weekDays.map((day) => <span className="calendar-weekday" key={day}>{day}</span>)}
           {Array.from({ length: firstDay }, (_, index) => <span key={`blank-${index}`} aria-hidden="true" />)}
@@ -104,28 +115,39 @@ export default function HomePage() {
             const day = index + 1;
             const dateKey = localDayKey(new Date(today.getFullYear(), today.getMonth(), day));
             const completed = completedDays.has(dateKey);
-            return <span className={`calendar-day${completed ? " trained" : ""}${dateKey === todayKey ? " today" : ""}`} key={dateKey} aria-label={`${day}日${completed ? "、トレーニング済み" : ""}${dateKey === todayKey ? "、今日" : ""}`}>{day}</span>;
+            const inProgress = activeDayKey === dateKey;
+            return <span className={`calendar-day${completed ? " trained" : ""}${inProgress ? " in-progress" : ""}${dateKey === todayKey ? " today" : ""}`} key={dateKey} aria-label={`${day}日${completed ? "、トレーニング済み" : ""}${inProgress ? "、記録中" : ""}${dateKey === todayKey ? "、今日" : ""}`}>{day}</span>;
           })}
         </div>
-        <p className="calendar-legend"><span className="legend-dot" /> 印のある日はトレーニング済み</p>
+        <div className="calendar-legend"><span><i className="legend-dot" /> トレーニング済み</span><span><i className="legend-dot in-progress-dot" /> 記録中</span></div>
       </section>
 
-      <section className="today-card" aria-label="今日のトレーニングのサマリー">
-        <div className="dashboard-section-heading"><div><span className="eyebrow">TODAY</span><h2>今日のトレーニング</h2></div><span className="today-status">{activeToday ? "記録中" : todaySessions.length > 0 ? "記録済み" : "未記録"}</span></div>
-        {loading ? <p className="today-empty">記録を読み込み中…</p> : todaySetCount === 0 && !activeToday ? <p className="today-empty">まだ記録はありません。今日のトレーニングを始めましょう。</p> : (
-          <div className="today-stats"><div><strong>{todaySessions.length + (activeToday ? 1 : 0)}</strong><span>回のトレーニング</span></div><div><strong>{todayExerciseCount}</strong><span>種目</span></div><div><strong>{todaySetCount}</strong><span>セット</span></div></div>
+      <section className="today-card home-today" aria-label="今日のトレーニングのサマリー">
+        <div className="dashboard-section-heading"><div><span className="eyebrow">TODAY</span><h2>今日のトレーニング</h2></div><span className="today-status">{loading ? "読み込み中" : dataError ? "取得できません" : activeToday ? "記録中" : todaySessions.length > 0 ? "記録済み" : "未記録"}</span></div>
+        {loading ? <p className="today-empty">記録を読み込み中…</p> : dataError ? <p className="today-empty">今日の記録を取得できませんでした。</p> : todaySetCount === 0 && !activeToday ? <p className="today-empty">今日の記録はまだありません。</p> : (
+          <p className="today-summary">{todaySessions.length + (activeToday ? 1 : 0)} 回のトレーニング <span>·</span> {todayExerciseCount} 種目 <span>·</span> {todaySetCount} セット</p>
         )}
         {activeToday && <p className="today-note">{formatWorkoutTime(activeToday.startedAt)} に開始した記録が進行中です。</p>}
       </section>
 
-      <button className="primary-button dashboard-cta" type="button" onClick={handleStart} disabled={loading || starting}>
-        {starting ? "準備中…" : active ? "進行中のトレーニングを再開" : "今日のトレーニングを追加"}<span aria-hidden="true">↗</span>
+      <button className="primary-button dashboard-cta" type="button" onClick={handleStart} disabled={loading || starting || dataError}>
+        <span className="cta-plus" aria-hidden="true">＋</span>{starting ? "準備中…" : active ? "未完了の記録を再開" : "今日のトレーニングを追加"}<span className="cta-arrow" aria-hidden="true">›</span>
       </button>
       {active && !activeToday && <p className="today-note">{formatWorkoutDate(active.startedAt)} に始めたトレーニングを先に再開します。</p>}
 
+      <section className="monthly-section" aria-label="今月の集計">
+        <div className="section-title-row"><div><span className="eyebrow">MONTHLY SUMMARY</span><h2>今月の集計</h2></div></div>
+        <div className="monthly-stats">
+          <div className="monthly-stat"><span>トレーニング日数</span><strong>{loading || dataError ? "—" : completedDays.size}<small>日</small></strong></div>
+          <div className="monthly-stat"><span>セット数</span><strong>{loading || dataError ? "—" : monthSetCount}<small>セット</small></strong></div>
+          <div className="monthly-stat volume-stat"><span>総負荷量</span><strong>{loading || dataError ? "—" : volumeFormatter.format(monthVolumeKg)}<small>kg</small></strong></div>
+        </div>
+        <p className="monthly-note">総負荷量は「重量 × 回数」の合計です。重量0kgのセットはセット数に含まれます。</p>
+      </section>
+
       <section className="section-block recent-section">
         <div className="section-title-row"><div><span className="eyebrow">PAST SESSIONS</span><h2>最近の記録</h2></div><Link className="subtle-link" href="/history">すべて見る ↗</Link></div>
-        {loading ? <div className="empty-card">記録を読み込み中…</div> : recent.length === 0 ? <div className="empty-card"><p>まだ完了した記録はありません。</p></div> : (
+        {loading ? <div className="empty-card">記録を読み込み中…</div> : dataError ? <div className="empty-card">記録を取得できませんでした。</div> : recent.length === 0 ? <div className="empty-card"><p>まだ完了した記録はありません。</p></div> : (
           <div className="history-list">{recent.map((session) => <Link className="history-item" key={session.id} href={`/history/${session.id}`}><div><strong>{formatWorkoutDate(session.startedAt)}</strong><span>{formatWorkoutTime(session.startedAt)} 開始</span></div><span className="history-meta">{session.exerciseCount} 種目 · {session.setCount} セット</span><span className="list-arrow">↗</span></Link>)}</div>
         )}
       </section>

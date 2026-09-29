@@ -250,37 +250,63 @@ export async function getCompletedWorkoutsInRange(
   start: string,
   end: string,
 ): Promise<WorkoutSummary[]> {
-  const { data, error } = await client.from("workout_sessions")
-    .select("id, status, started_at, finished_at")
-    .eq("user_id", userId).eq("status", "completed")
-    .gte("started_at", start).lt("started_at", end)
-    .order("started_at", { ascending: false });
-  if (error) throw error;
-  return summarizeSessions(client, (data ?? []) as SessionRow[]);
+  const sessions: SessionRow[] = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await client.from("workout_sessions")
+      .select("id, status, started_at, finished_at")
+      .eq("user_id", userId).eq("status", "completed")
+      .gte("started_at", start).lt("started_at", end)
+      .order("started_at", { ascending: false }).order("id", { ascending: false })
+      .range(offset, offset + 499);
+    if (error) throw error;
+    const rows = (data ?? []) as SessionRow[];
+    sessions.push(...rows);
+    if (rows.length < 500) break;
+  }
+  return summarizeSessions(client, sessions);
 }
 
 async function summarizeSessions(client: SupabaseClient, sessions: SessionRow[]): Promise<WorkoutSummary[]> {
   if (sessions.length === 0) return [];
 
-  const { data: exerciseData, error: exerciseError } = await client.from("workout_exercises")
-    .select("id, workout_session_id").in("workout_session_id", sessions.map((session) => session.id));
-  if (exerciseError) throw exerciseError;
-  const exerciseRows = (exerciseData ?? []) as Pick<WorkoutExerciseRow, "id" | "workout_session_id">[];
+  const exerciseRows: Pick<WorkoutExerciseRow, "id" | "workout_session_id">[] = [];
+  for (let index = 0; index < sessions.length; index += 100) {
+    const sessionIds = sessions.slice(index, index + 100).map((session) => session.id);
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await client.from("workout_exercises")
+        .select("id, workout_session_id")
+        .in("workout_session_id", sessionIds).order("id").range(offset, offset + 499);
+      if (error) throw error;
+      const rows = (data ?? []) as Pick<WorkoutExerciseRow, "id" | "workout_session_id">[];
+      exerciseRows.push(...rows);
+      if (rows.length < 500) break;
+    }
+  }
 
-  let setRows: Pick<SetRow, "workout_exercise_id">[] = [];
-  if (exerciseRows.length > 0) {
-    const { data: setData, error: setError } = await client.from("workout_sets")
-      .select("workout_exercise_id").in("workout_exercise_id", exerciseRows.map((row) => row.id));
-    if (setError) throw setError;
-    setRows = (setData ?? []) as Pick<SetRow, "workout_exercise_id">[];
+  const setRows: Pick<SetRow, "workout_exercise_id" | "weight_kg" | "reps">[] = [];
+  for (let index = 0; index < exerciseRows.length; index += 100) {
+    const exerciseIds = exerciseRows.slice(index, index + 100).map((row) => row.id);
+    for (let offset = 0; ; offset += 500) {
+      const { data, error } = await client.from("workout_sets")
+        .select("workout_exercise_id, weight_kg, reps, id")
+        .in("workout_exercise_id", exerciseIds).order("id").range(offset, offset + 499);
+      if (error) throw error;
+      const rows = (data ?? []) as Pick<SetRow, "workout_exercise_id" | "weight_kg" | "reps">[];
+      setRows.push(...rows);
+      if (rows.length < 500) break;
+    }
   }
 
   const sessionIdByExerciseId = new Map(exerciseRows.map((row) => [row.id, row.workout_session_id]));
-  const counts = new Map(sessions.map((session) => [session.id, { exercises: 0, sets: 0 }]));
+  const counts = new Map(sessions.map((session) => [session.id, { exercises: 0, sets: 0, volumeKg: 0 }]));
   for (const row of exerciseRows) counts.get(row.workout_session_id)!.exercises += 1;
   for (const row of setRows) {
     const sessionId = sessionIdByExerciseId.get(row.workout_exercise_id);
-    if (sessionId) counts.get(sessionId)!.sets += 1;
+    if (sessionId) {
+      const summary = counts.get(sessionId)!;
+      summary.sets += 1;
+      summary.volumeKg += Number(row.weight_kg) * row.reps;
+    }
   }
 
   return sessions.map((session) => ({
@@ -289,6 +315,7 @@ async function summarizeSessions(client: SupabaseClient, sessions: SessionRow[])
     finishedAt: session.finished_at!,
     exerciseCount: counts.get(session.id)!.exercises,
     setCount: counts.get(session.id)!.sets,
+    volumeKg: Math.round(counts.get(session.id)!.volumeKg * 100) / 100,
   }));
 }
 
