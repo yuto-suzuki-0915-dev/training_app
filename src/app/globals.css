@@ -156,7 +156,7 @@ a { color: inherit; text-decoration: none; }
 .form-stack input { height: 52px; }
 .form-stack .primary-button { margin-top: 9px; }
 .centered { align-self: center; }
-.email-target { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.auth-switch { display: block; margin: 18px auto 0; }
 .login-note { color: #8b9593; font-size: 11px; margin-top: 30px; }
 
 @media (max-width: 700px) {

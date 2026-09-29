@@ -27,21 +27,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (active) {
         setClient(supabase);
         setUser(session?.user ?? null);
+        setLoading(false);
       }
-    });
-
-    void supabase.auth.getUser().then(({ data }) => {
-      if (active) {
-        setClient(supabase);
-        setUser(data.user);
-      }
-    }).catch(() => {
-      if (active) {
-        setClient(supabase);
-        setUser(null);
-      }
-    }).finally(() => {
-      if (active) setLoading(false);
     });
 
     return () => {
