@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth-provider";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const isHome = pathname === "/";
   const router = useRouter();
   const { client } = useAuth();
   const [signingOut, setSigningOut] = useState(false);
@@ -27,7 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="app-root">
-      <header className="app-header">
+      <header className={`app-header${isHome ? " home-app-header" : ""}`}>
         <div className="header-inner">
           <Link className="brand" href="/" aria-label="ホームへ">LOG<span>BOOK</span><span className="brand-dot">.</span></Link>
           <div className="header-actions">
@@ -37,7 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       {error && <div className="global-error" role="alert">{error}</div>}
-      <div className="page-wrap">{children}</div>
+      <div className={`page-wrap${isHome ? " home-page-wrap" : ""}`}>{children}</div>
       <nav className="bottom-nav" aria-label="メインナビゲーション">
         <Link href="/history" className={pathname.startsWith("/history") ? "active" : ""}><span className="nav-icon">▤</span>履歴</Link>
         <Link href="/" className={`home-tab${pathname === "/" ? " active" : ""}`} aria-current={pathname === "/" ? "page" : undefined}><span className="nav-icon">⌂</span>ホーム</Link>
