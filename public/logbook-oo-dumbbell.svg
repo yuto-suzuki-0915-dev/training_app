@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">LOGBOOK ダンベルロゴ</title>
+  <desc id="desc">LOGBOOK の二つの O をプレートに見立てたダンベルと、LOGBOOK の文字を組み合わせた正方形のアプリアイコン。</desc>
+  <rect width="512" height="512" fill="#1d4136"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M196 222h120" stroke="#b9ef73" stroke-width="26"/>
+    <path d="M211 209v26M229 209v26M247 209v26M265 209v26M283 209v26M301 209v26" stroke="#1d4136" stroke-width="5"/>
+    <rect x="105" y="152" width="106" height="140" rx="51" stroke="#fff" stroke-width="24"/>
+    <rect x="301" y="152" width="106" height="140" rx="51" stroke="#fff" stroke-width="24"/>
+    <path d="M86 222h10M416 222h10" stroke="#fff" stroke-width="14"/>
+    <rect x="66" y="190" width="20" height="64" rx="10" fill="#fff"/>
+    <rect x="426" y="190" width="20" height="64" rx="10" fill="#fff"/>
+  </g>
+  <text x="256" y="385" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="44" font-weight="800" letter-spacing="5" text-anchor="middle">LOGBOOK</text>
+  <circle cx="423" cy="370" r="6" fill="#b9ef73"/>
+</svg>
